@@ -12,10 +12,10 @@ import numpy as np
 from common import Latest
 
 MODELS = Path(__file__).resolve().parent / "models"
-# each models/NAME_ncnn directory is a detector: nanodet* are NanoDet-Plus, the rest ultralytics YOLO exports
-# (exported with ultralytics 8.4; an older yolo8 export segfaulted in ncnn 1.0.20260526)
+# each models/NAME_ncnn directory is a detector: nanodet* are NanoDet-Plus, yolo_fastest* Yolo-FastestV2, the rest
+# ultralytics YOLO exports (exported with ultralytics 8.4; an older yolo8 export segfaulted in ncnn 1.0.20260526)
 DETECTORS = sorted(p.name.removesuffix("_ncnn") for p in MODELS.glob("*_ncnn"))
-DEFAULT_CONF = {"yolo": 0.25, "nanodet": 0.35}
+DEFAULT_CONF = {"yolo": 0.25, "nanodet": 0.35, "yolo_fastest": 0.3}  # yolo_fastest: upstream test.py
 NO_BOXES = np.zeros((0, 7), np.float32)
 
 
@@ -24,11 +24,14 @@ def load_detector(name, conf, classes):
     if name is None:
         return None
     path = str(MODELS / f"{name}_ncnn")
-    family = "nanodet" if name.startswith("nanodet") else "yolo"
+    family = next((f for f in ("nanodet", "yolo_fastest") if name.startswith(f)), "yolo")
     conf = DEFAULT_CONF[family] if conf is None else conf
     if family == "yolo":
         from yolo_detector import Yolo  # ncnn is imported only when a detector is used
         det = Yolo(path, conf)
+    elif family == "yolo_fastest":
+        from yolo_fastest_detector import YoloFastest
+        det = YoloFastest(path, conf)
     else:
         from nanodet_detector import NanoDet
         det = NanoDet(path, conf)

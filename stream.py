@@ -2,6 +2,7 @@
 
     python stream.py                                               # Pi camera -> web :5000, no detection
     python stream.py -d nanodet                                    # Pi camera -> NanoDet -> web
+    python stream.py -d yolo_fastestv2                             # Pi camera -> Yolo-FastestV2 -> web
     python stream.py -d yolo26 --web 8080 --save rec.mp4           # Pi camera -> YOLO26 -> web + recording
     python stream.py -d nanodet --classes pedestrian,car           # only these classes
     python stream.py -d yolo8 --tracker bytetrack                  # boxes labeled with track IDs
@@ -36,7 +37,8 @@ def parse_args():
     p.add_argument("--once", action="store_true", help="process a single frame (camera snapshot)")
     p.add_argument("--duration", type=float, metavar="SEC", help="stop after SEC seconds from the first frame")
     p.add_argument("-d", "--detector", choices=DETECTORS, help="model in models/; omit for a clean camera stream")
-    p.add_argument("--conf", type=float, help="confidence threshold (default: yolo* 0.25, nanodet* 0.35)")
+    p.add_argument("--conf", type=float,
+                   help="confidence threshold (default: yolo_fastest* 0.3, other yolo* 0.25, nanodet* 0.35)")
     p.add_argument("--classes", help=f"keep only these classes, comma-separated: {','.join(VISDRONE)}")
     p.add_argument("--tracker", choices=TRACKERS, default="none", help="object tracker (needs a detector)")
     p.add_argument("--web", type=int, nargs="?", const=5000, metavar="PORT",

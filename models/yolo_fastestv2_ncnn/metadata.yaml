@@ -1,0 +1,18 @@
+description: Yolo-FastestV2 trained on VisDrone, converted from models_pt/yolo_fastestv2.pt with pnnx
+imgsz:  # h, w
+- 384
+- 640
+# w, h in input pixels: 3 for stride 16, then 3 for stride 32. The checkpoint has none, so these are fitted to its
+# predictions on VisDrone test-dev images outside the 500 subset; replace with the training .data anchors when known
+anchors: [1.95, 2.14, 4.70, 6.39, 10.66, 6.93, 7.77, 10.57, 18.09, 15.25, 35.81, 32.60]
+names:
+  0: pedestrian
+  1: people
+  2: bicycle
+  3: car
+  4: van
+  5: truck
+  6: tricycle
+  7: awning-tricycle
+  8: bus
+  9: motor
