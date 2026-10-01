@@ -1,0 +1,29 @@
+description: YOLO11n VisDrone, FP16 weights (ultralytics ncnn export, quantize 16)
+author: Ultralytics
+date: '2026-09-30T19:54:45.441574+03:00'
+version: 8.4.168
+license: AGPL-3.0 License (https://ultralytics.com/license)
+docs: https://docs.ultralytics.com
+stride: 32
+task: detect
+head: Detect
+batch: 1
+imgsz:
+- 640
+- 640
+names:
+  0: pedestrian
+  1: people
+  2: bicycle
+  3: car
+  4: van
+  5: truck
+  6: tricycle
+  7: awning-tricycle
+  8: bus
+  9: motor
+args:
+  batch: 1
+  quantize: 16
+channels: 3
+end2end: false
