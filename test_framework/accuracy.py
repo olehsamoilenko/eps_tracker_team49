@@ -9,7 +9,7 @@ Pi slowly enough that it never overheats. No FPS: see performance.py.
 
 Each detector runs the pipeline over the test images in its own process, with a pause after every image and a
 longer one whenever the CPU reaches --pause-temp, until it is back at --resume-temp. The COCO evaluation then runs
-in another process. Average and max CPU temperature and RAM of each detector go to the log and to summary.md.
+in another process. Average and max CPU temperature and RAM of each detector go to the log and to out/summary.md.
 Setup and details: TEST_FRAMEWORK.md
 """
 import argparse
@@ -65,7 +65,7 @@ def main():
         for name in cfg["models"]:
             res = run_detector(mon, cfg, name, ("accuracy", "eval"))
             log_conditions(res, env["ram_mb"])
-            accuracy_summary(cfg, env)  # summary.md gets every detector as soon as it is done
+            accuracy_summary(cfg, env)  # out/summary.md gets every detector as soon as it is done
         mon.event("all detectors done")
     except KeyboardInterrupt:
         interrupted(mon, cfg)

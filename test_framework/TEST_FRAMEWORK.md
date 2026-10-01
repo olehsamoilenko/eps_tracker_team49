@@ -8,7 +8,7 @@ pipeline, the way `stream.py` processes a video file: `pipeline.load_detector`, 
 |---|---|---|
 | measures | at IoU 0.5: mAP50, AR (recall with all detections), P / R / F1 at the deployment confidence | detector FPS and mean latency; pipeline FPS with video decoding; peak RAM |
 | on | VisDrone2019-DET test-dev, never used in training: 500 of its 1610 images, with the same class ratio | a video: `--frames` (100) timed frames after `--warmup` (10) |
-| how | slowly, so the Pi never overheats: a rest after every image, and a pause whenever the CPU reaches 70 °C, until it is back at 60 °C | each detector in one go over the video, no pauses; the Pi cools down to its idle baseline only after a video, before the next detector |
+| how | slowly, so the Pi never overheats: a rest after every image, and a pause whenever the CPU reaches 70 °C, until it is back at 60 °C | each detector in one go over the video, no pauses; the Pi cools down to its idle baseline only after a video, before the next detector. Without a fan: `--chunk` and `--start-temp` (section 5) |
 | logs per detector | average and max CPU temperature, RAM used (system and detector process), voltages, pauses | start / end / max temperature, min / max voltages, average / max RAM, throttling during the video |
 | duration (estimate, Pi 5) | about 10 minutes per detector | about 10 to 30 minutes, mostly cooldowns |
 
@@ -153,6 +153,8 @@ python test_framework/performance.py                               # all detecto
 python test_framework/performance.py --models yolo26 nanodet
 python test_framework/performance.py --tracker bytetrack           # with the tracker behind the detector
 python test_framework/performance.py --video input/long_flight.mp4 --frames 1000
+# no fan: 10 chunks of 50 frames over the whole video, every chunk of every detector from 60 °C
+python test_framework/performance.py --video input/kyiv_drone.mp4 --frames 500 --chunk 50 --start-temp 60 --max-temp 80
 ```
 
 1. **Baseline.** The Pi's idle temperature, RAM and CPU load are measured first (`--baseline-s`).
@@ -163,6 +165,14 @@ python test_framework/performance.py --video input/long_flight.mp4 --frames 1000
    - leave the first `--warmup` frames untimed, then time `det.detect()` on the next `--frames` frames.
 
    Nothing pauses during the video, so the Pi heats up as it would in use.
+
+   Without a fan the Pi reaches 80 °C after about 100 YOLO frames from 60 °C and throttles. To time many frames
+   anyway, give `--chunk N` and `--start-temp C`. The timed frames then come in chunks of N, spread evenly over the
+   video; the frames between two chunks are read but not detected. Before every chunk, the first one included (so
+   after the load and warm-up too), the worker idles, with the model loaded, until 3 readings in a row are at most
+   C °C. Every chunk of every detector thus starts from the same temperature. Pick N so that a chunk stays well below
+   `--max-temp` (50 frames from 60 °C peak around 70 °C). The result is the Pi's FPS below its throttling point,
+   not its sustained FPS with a passive heatsink.
 3. **Cooldown.** After each video the Pi idles until the temperature is within `--cool-delta` of the baseline. Free
    RAM and CPU load must also be back, and no throttling flag may be set. Only then does the next detector start.
    With `--start-temp C` the target is C °C instead, and the Pi also cools down to it before the first detector.
@@ -177,7 +187,8 @@ python test_framework/performance.py --video input/long_flight.mp4 --frames 1000
 | `--conf X` | pipeline default | detection confidence (yolo* 0.25, nanodet* 0.35) |
 | `--baseline-s S` | 30 | idle seconds measured at start |
 | `--cool-delta C` | 3 | cooled down at ≤ baseline temperature + C |
-| `--start-temp C` | off | cool down to C °C before every detector, the first one included (instead of `--cool-delta`) |
+| `--start-temp C` | off | cool down to C °C before every detector, the first one included (instead of `--cool-delta`), and again before its timed frames (each chunk) |
+| `--chunk N` | off | timed frames per chunk, chunks spread evenly over the video, each after a cooldown to `--start-temp` (needs it) |
 | `--cooldown-min S`, `--cooldown-max S` | 30, 600 | cooldown bounds; after the max it goes on with a warning |
 | `--ram-tolerance-mb MB` | 150 | free RAM must be back within this of the baseline |
 | `--drop-caches` | off | drop the Linux page cache after each detector (needs passwordless sudo) |
@@ -188,19 +199,23 @@ Common to both frameworks:
 |---|---|---|
 | `--models NAME ...` | all `models/*_ncnn` | detectors, in this order; a new `models/NAME_ncnn` is picked up automatically |
 | `--out DIR` | `out/accuracy/<date-time>` or `out/performance/<date-time>` | results folder |
-| `--resume DIR` | | continue a run with its saved settings; finished detectors are skipped. With `--models`, those detectors are added to the run, so their results go into the same `summary.md` |
+| `--resume DIR` | | continue a run with its saved settings; finished detectors are skipped. With `--models`, those detectors are added to the run, so their results go into the same part of `out/summary.md` |
 | `--interval S` | 1 | telemetry period |
 | `--max-temp C`, `--min-free-mb MB` | 82, 150 | guard limits |
 | `--no-undervolt-guard` | | keep running under under-voltage (the run is then likely to reboot the Pi) |
 
 ## 6. Results
 
-Everything goes to the run folder (`out/accuracy/...` or `out/performance/...`, git-ignored):
+The result tables go to one file, `out/summary.md` (git-ignored). It has an accuracy part and an FPS part: a run
+of `accuracy.py` or `performance.py` replaces its own part and keeps the other one, so the file always holds the
+latest run of each. Each part names its run folder and has the result tables, the per-detector conditions, and a
+line for the whole session. Both rewrite their part after every detector, so it holds the finished ones during the
+run (`performance.py` does it in the cooldown, never during a video).
+
+Everything else goes to the run folder (`out/accuracy/...` or `out/performance/...`):
 
 | file | content |
 |---|---|
-| `summary.md` | the result tables, the per-detector conditions, and a line for the whole session. `accuracy.py` rewrites it after every detector, so it holds the finished ones during the run |
-| `summary.csv` | the same, one row per detector |
 | `benchmark.log` | the full timestamped log: settings, every stage of every detector, the pipeline's stats lines, temperature pauses, telemetry status every 15 s, warnings, guard actions, errors |
 | `telemetry.csv` | one row per second: `time, elapsed_s, phase, temp_c, arm_mhz, cpu_pct, load1, mem_used_mb, mem_avail_mb, swap_used_mb, worker_rss_mb, core_v, ext5v_v, fan_rpm, throttled, flags`. `phase` is e.g. `yolo26:accuracy`, `yolo26:paused`, `nanodet:video` or `cooldown after nanodet`; `ext5v_v` is the Pi 5's 5 V input |
 | `NAME.json` | all numbers of one detector, including telemetry aggregates per stage and package versions |
@@ -211,7 +226,7 @@ To copy the results to a PC: `rsync -av pi@<pi-ip>:eps_tracker_team49/out/ ./pi-
 
 ### Example output
 
-These show the format of `summary.md`; they are **not results**:
+These show the format of the two parts of `out/summary.md`; they are **not results**:
 
 - The accuracy and FPS numbers come from smoke runs on a MacBook (M3 Pro): 40 test images, and 100 frames of
   `input/fps_clip.mp4`. A Pi is much slower, and the full test set gives different mAP.
@@ -287,7 +302,6 @@ The simulated `THROTTLED` flag during yolo8's video is what puts **(!)** next to
 |---|---|
 | mAP50, AR | pycocotools over the test set at IoU 0.5, with detections of score ≥ `--eval-conf`, up to `--max-det` per image for every detector. AR is the recall when all those detections are kept |
 | P, R, F1 | at IoU 0.5, keeping detections with score ≥ the detector's `conf`. "best F1 / at conf" is the confidence that would maximise F1 |
-| hot pauses, paused s | how often and how long the pass waited for the CPU to cool down |
 
 **Speed** (`performance.py`)
 
@@ -296,7 +310,7 @@ The simulated `THROTTLED` flag during yolo8's video is what puts **(!)** next to
 | warm-up frames | the untimed frames at the start of the video (`--warmup`, 10 by default), kept out of the FPS so that one-off start-up costs (first allocations, cold caches) do not skew it |
 | frames | timed frames (`--frames`) |
 | detector FPS, mean ms | every `det.detect()` call on the timed frames, timed like the pipeline's own `det.timing`. Decoding the video is not included |
-| pipeline FPS | frames per second of `pipeline.iter_frames()` (offline) over the timed frames, including video decoding and the tracker |
+| pipeline FPS | frames per second of `pipeline.iter_frames()` (offline) over the timed frames, including video decoding and the tracker (with `--chunk`: the chunks only) |
 | peak RAM MB | peak RSS of the detector process |
 
 **Conditions** (both, per detector, over its run; cooldowns excluded)
@@ -311,6 +325,8 @@ The simulated `THROTTLED` flag during yolo8's video is what puts **(!)** next to
 | avg / max RAM used | RAM use of the whole system (MB and % of total) |
 | avg / max detector MB | RAM of the detector's worker process |
 | flags | throttling flags seen during the run. In `performance.py`, **(!)** next to the FPS means throttling or under-voltage happened during the video, so that FPS is not clean: improve cooling or power and rerun |
+| hot pauses, paused s | (accuracy) how often and how long the pass waited for the CPU to cool down |
+| chunks, chunk start °C, chunk end max °C | (performance) timed chunks (1 without `--chunk`), the range of CPU temperatures at their first frames, and the hottest at their last frames |
 | cooldown after s | (performance) how long the Pi idled after this detector's video |
 | Whole run | the same over the entire session, from the first telemetry row to the last |
 

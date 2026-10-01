@@ -4,7 +4,7 @@
 
 accuracy: slow, temperature-paced pass of the pipeline over the test images -> NAME_dets.npy   (accuracy.py)
 eval:     COCO metrics from NAME_dets.npy, in its own process so no detector sits in RAM     (accuracy.py)
-fps:      the pipeline over a short video in one go, timed                                  (performance.py)
+fps:      the pipeline over a video, timed, in one go or in chunks that each start cool     (performance.py)
 Each stage adds its results to NAME.json; everything printed here ends up in benchmark.log.
 """
 import os
@@ -77,17 +77,30 @@ class Pacer:
         phase("accuracy")
 
 
+def cool_to(target, max_s, readings=3):
+    """Idles until `readings` CPU readings in a row, 1 s apart, are at `target` C or below (a single low reading can
+    be noise of the ondemand governor's clock changes), or max_s seconds have passed. Returns (seconds, temperature)."""
+    t0, below = time.time(), 0
+    while True:
+        temp = cpu_temp()
+        below = below + 1 if temp is not None and temp <= target else 0
+        if temp is None or below >= readings or time.time() - t0 >= max_s:
+            return time.time() - t0, temp
+        time.sleep(1)
+
+
 def pipeline_frames(cap, fps, is_file, det, tracker):
     """The pipeline as stream.py runs it for a video file with --save: pipeline.iter_frames in offline mode, every
     frame read and then detected, nothing skipped."""
     return iter_frames(cap, fps, is_file, det, tracker, single=False, offline=True)
 
 
-def run(det, frames, after_frame=None, limit=None, total=None):
+def run(det, frames, after_frame=None, limit=None, total=None, done=0):
     """Consumes `limit` frames at most of the pipeline's (frame, boxes) iterator; a next run() on the same iterator
     continues where this one stopped. Returns per-frame boxes ((M, 7) [x1, y1, x2, y2, track_id, conf, cls]),
     per-frame det.detect() ms, the wall seconds and the last frame's "WxH".
-    after_frame() runs between frames, outside the detector's timing. total: frames expected, for the progress bar."""
+    after_frame() runs between frames, outside the detector's timing. total: frames expected, for the progress bar;
+    done: frames of it counted by earlier run() calls."""
     stats, boxes, times, size = Stats(det), [], [], None
     t0 = time.perf_counter()
     for frame, b in frames:
@@ -97,7 +110,7 @@ def run(det, frames, after_frame=None, limit=None, total=None):
         stats.tick(b)
         stats.log()
         if total:
-            print(f"{PROGRESS}{len(boxes)} {total}", flush=True)
+            print(f"{PROGRESS}{done + len(boxes)} {total}", flush=True)
         if limit and len(boxes) >= limit:
             break
         if after_frame:
@@ -195,20 +208,46 @@ def fps(name, cfg):
     frames = pipeline_frames(cap, video_fps, is_file, det, load_tracker(cfg["tracker"]))
     warm = run(det, frames, limit=cfg["warmup"])[0] if cfg["warmup"] else []
 
-    phase("video")  # the next frames of the same pass, no pauses: the Pi heats up as it would in use
-    boxes, times, wall, resolution = run(det, frames, limit=cfg["frames"], total=cfg["frames"])
+    # .get: runs saved before --chunk and --start-temp existed
+    size, start = cfg.get("chunk") or cfg["frames"], cfg.get("start_temp")
+    n = -(-cfg["frames"] // size)
+    # the chunks spread evenly over the rest of the video; the frames between them are read, but not detected
+    gap = max(0, ((cfg.get("video_frames") or 0) - len(warm)) // n - size)
+    boxes, times, wall, chunks, resolution = [], [], 0.0, [], None
+    while len(boxes) < cfg["frames"]:
+        if chunks:
+            for _ in range(gap):
+                cap.read()
+        if start is not None:  # loading, warm-up and the last chunk heat the CPU: every chunk starts at --start-temp
+            phase("cooling")
+            waited, temp = cool_to(start, cfg["cooldown_max"])
+            if temp is not None and temp > start:
+                print(f"CPU {temp} C: {start} C not reached in {waited:.0f} s, going on anyway", flush=True)
+        temp = cpu_temp()
+        phase("video")  # no pauses within a chunk: the Pi heats up as it would in use
+        limit = min(size, cfg["frames"] - len(boxes))
+        b, t, w, resolution = run(det, frames, limit=limit, total=cfg["frames"], done=len(boxes))
+        boxes += b
+        times.append(t)
+        wall += w
+        chunks.append({"frames": len(b), "start_temp_c": temp, "end_temp_c": cpu_temp()})
+        if n > 1 and len(b):
+            print(f"chunk {len(chunks)}/{n}: {len(b)} frames, CPU {temp} -> {chunks[-1]['end_temp_c']} C, "
+                  f"detector {1000 / t.mean():.2f} FPS", flush=True)
+        if len(b) < limit:  # the video ended
+            break
     frames.close()
     cap.release()
     if len(boxes) < cfg["frames"]:
-        raise SystemExit(f"{cfg['video']} ended after {len(warm) + len(boxes)} frames; it needs --warmup "
+        raise SystemExit(f"{cfg['video']} ended after {len(warm) + len(boxes)} detected frames; it needs --warmup "
                          f"{cfg['warmup']} + --frames {cfg['frames']}")
-    speed = dict(latency_stats(times), pipeline_fps=round(len(boxes) / wall, 2),
+    speed = dict(latency_stats(np.concatenate(times)), pipeline_fps=round(len(boxes) / wall, 2),
                  dets_per_frame=round(float(np.mean([len(b) for b in boxes])), 1))
     print(f"{len(boxes)} frames: detector {speed['fps']} FPS, {speed['mean_ms']} ms/frame, "
           f"pipeline {speed['pipeline_fps']} FPS, peak RAM {peak_rss_mb()} MB", flush=True)
     update_result(cfg, name, **model_info(det, module), conf=det.conf, tracker=cfg["tracker"],
                   video={"path": cfg["video"], "resolution": resolution, "fps": round(video_fps, 2),
-                         "warmup_frames": len(warm), "frames": len(boxes)},
+                         "warmup_frames": len(warm), "frames": len(boxes), "chunks": chunks, "gap_frames": gap},
                   speed=speed, peak_rss_mb=peak_rss_mb(), measured=now())
 
 

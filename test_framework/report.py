@@ -1,10 +1,10 @@
-"""summary.md and summary.csv of a run: accuracy.py -> accuracy and test conditions, performance.py -> FPS and
-test conditions. Both are also written to benchmark.log."""
-import csv
+"""The one summary file, out/summary.md: accuracy.py -> its accuracy part, performance.py -> its FPS part, each with
+the test conditions. A run replaces its own part and keeps the other one. Also written to benchmark.log."""
 import logging
 import os
+import re
 
-from results import read_json, result_path
+from results import SUMMARY, read_json, result_path
 from telemetry import aggregate, telemetry_rows
 
 log = logging.getLogger("benchmark")
@@ -72,22 +72,28 @@ def whole_run(cfg, env):
             f"flags: {', '.join(b.get('flags', [])) or 'none'}")
 
 
-def write(cfg, env, rows, title, settings, sections):
-    """summary.csv from rows, summary.md from the sections [(heading, text)], both logged."""
-    with open(os.path.join(cfg["out"], "summary.csv"), "w", newline="") as f:
-        w = csv.DictWriter(f, [k for k in rows[0] if not k.endswith("_md")])
-        w.writeheader()
-        w.writerows([{k: v for k, v in r.items() if not k.endswith("_md")} for r in rows])
+def write(cfg, env, title, settings, sections):
+    """Replaces this run's part (`# title: ...`) of SUMMARY with the sections [(heading, text)], keeping the other
+    framework's part; logged."""
     sections = sections + [("Whole run", f"Over the whole session (all detectors and cooldowns): "
                                          f"{whole_run(cfg, env)}")]
-    text = f"# {title}: {env['device']}\n\n" + "".join(f"- {s}\n" for s in settings) \
+    text = f"# {title}: {env['device']}\n\n" + f"- Run: `{cfg['out']}`\n" + "".join(f"- {s}\n" for s in settings) \
         + f"- {env['os']}, kernel {env['kernel']}, CPU governor {env['cpu_governor']}, RAM {env['ram_mb']} MB\n" \
         + "".join(f"\n## {h}\n\n{body}\n" for h, body in sections)
-    with open(os.path.join(cfg["out"], "summary.md"), "w") as f:
-        f.write(text)
+    parts = {}  # "# title" -> its text, in file order
+    if os.path.exists(SUMMARY):
+        with open(SUMMARY) as f:
+            for part in re.split(r"(?m)^(?=# )", f.read()):
+                if part.strip():
+                    parts[part.split(":", 1)[0]] = part.rstrip("\n") + "\n"
+    parts[f"# {title}"] = text
+    os.makedirs(os.path.dirname(SUMMARY), exist_ok=True)
+    with open(SUMMARY + ".tmp", "w") as f:  # atomic: a crash mid-write must not lose the other framework's part
+        f.write("\n".join(parts.values()))
+    os.replace(SUMMARY + ".tmp", SUMMARY)
     log.info("Results\n\n" + "\n\n".join(body for _, body in sections) + "\n")
-    log.info(f"Results saved: {os.path.join(cfg['out'], 'summary.md')} (and summary.csv, <detector>.json); "
-             f"log: benchmark.log, telemetry: telemetry.csv")
+    log.info(f"Results saved: {SUMMARY} ({title}); per detector: <detector>.json in {cfg['out']}, with "
+             f"benchmark.log and telemetry.csv")
 
 
 def accuracy_summary(cfg, env):
@@ -107,7 +113,7 @@ def accuracy_summary(cfg, env):
         ("best F1", "best_F1", 3), ("at conf", "best_F1_conf", 2)])
     state = table(rows, [("model", "model", None), ("status", "status", None), ("run min", "run_min", 1),
                          ("hot pauses", "pauses", None), ("paused s", "paused_s", None)] + CONDITION_COLS)
-    write(cfg, env, rows, "Detector accuracy", [
+    write(cfg, env, "Detector accuracy", [
         f"Test set: `{cfg['data']}`, {cfg.get('n_images')} images, {cfg.get('n_boxes')} boxes"
         + (" (--limit subset)" if cfg["limit"] else ""),
         f"All at IoU 0.5 (pycocotools): mAP50 and AR with detections of score >= {cfg['eval_conf']}, up to "
@@ -132,6 +138,12 @@ def performance_summary(cfg, env):
                "cooldown_after_s": (r.get("cooldown_after") or {}).get("seconds")}
         # FPS measured while the Pi was throttling or under-volted is not clean
         row["fps_md"] = fmt(row["fps"], 2) + (" (!)" if video_flags else "")
+        chunks = v.get("chunks") or []
+        starts = [c["start_temp_c"] for c in chunks if c["start_temp_c"] is not None]
+        ends = [c["end_temp_c"] for c in chunks if c["end_temp_c"] is not None]
+        row["chunks"] = len(chunks) or None
+        row["chunk_start_md"] = f"{fmt(min(starts), 1)}–{fmt(max(starts), 1)}" if starts else "-"
+        row["chunk_end_max"] = max(ends) if ends else None
         row["avg_ram_md"] = ram_text(row["avg_ram_used_mb"], env["ram_mb"])
         row["max_ram_md"] = ram_text(row["max_ram_used_mb"], env["ram_mb"])
         rows.append(row)
@@ -139,21 +151,28 @@ def performance_summary(cfg, env):
         ("model", "model", None), ("input", "input", None), ("warm-up frames", "warmup_frames", None),
         ("frames", "frames", None), ("detector FPS", "fps_md", None), ("mean ms", "mean_ms", 1),
         ("pipeline FPS", "pipeline_fps", 2), ("peak RAM MB", "peak_rss_mb", 0)])
-    state = table(rows, [("model", "model", None), ("status", "status", None), ("run min", "run_min", 1)]
+    state = table(rows, [("model", "model", None), ("status", "status", None), ("run min", "run_min", 1),
+                         ("chunks", "chunks", None), ("chunk start °C", "chunk_start_md", None),
+                         ("chunk end max °C", "chunk_end_max", 1)]
                   + CONDITION_COLS + [("cooldown after s", "cooldown_after_s", 0)])
     video = next((r["video"] for r in (read_json(result_path(cfg, n)) or {} for n in cfg["models"])
                   if r.get("video")), {})
-    write(cfg, env, rows, "Detector FPS", [
+    start, chunk = cfg.get("start_temp"), cfg.get("chunk")
+    write(cfg, env, "Detector FPS", [
         f"Video: `{cfg['video']}`, {video.get('resolution', '?')} at {video.get('fps', '?')} FPS; "
-        f"{cfg['warmup']} warm-up frames, then {cfg['frames']} timed frames in one go",
+        f"{cfg['warmup']} warm-up frames, then {cfg['frames']} timed frames"
+        + (f" in chunks of {chunk}, spread evenly over the video ({video.get('gap_frames', '?')} frames skipped "
+           f"between chunks)" if chunk else " in one go"),
         f"Tracker: {cfg['tracker']}; detection confidence: each detector's `conf`",
-        f"Cooldown to {cfg['start_temp']} °C before every detector, never during a video"
-        if cfg.get("start_temp") is not None else
+        f"Cooldown to {start} °C (3 readings in a row) before every detector, and again before "
+        + ("each chunk" if chunk else "its timed frames")
+        if start is not None else
         f"Cooldown to the idle baseline (+{cfg['cool_delta']} °C) after each video, never during one"], [
         ("Speed", "Warm-up frames: untimed, at the start of the video. Detector FPS and mean ms: `det.detect()` "
                   "(preprocess + inference + postprocess) over the timed frames, timed like the pipeline's "
-                  "`det.timing`. Pipeline FPS: frames per second of `pipeline.iter_frames()` (offline), including "
-                  "video decoding and the tracker. (!): throttling or under-voltage during the video, so that FPS "
-                  "is not clean.\n\n" + speed),
+                  "`det.timing`. Pipeline FPS: frames per second of `pipeline.iter_frames()` (offline) over the "
+                  "timed frames, including video decoding and the tracker. (!): throttling or under-voltage during "
+                  "the video, so that FPS is not clean.\n\n" + speed),
         ("Conditions", "Per detector, from its worker's start (model load, warm-up) to the end of the video. "
-                       "RAM used: the whole system; detector MB: its worker process.\n\n" + state)])
+                       "Chunk start / end °C: CPU temperature at each chunk's first and last timed frame. RAM used: "
+                       "the whole system; detector MB: its worker process.\n\n" + state)])

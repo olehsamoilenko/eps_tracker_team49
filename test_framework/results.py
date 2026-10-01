@@ -3,9 +3,9 @@
 A run folder (out/benchmark/<date-time>) holds:
   benchmark.log    everything printed during the run, timestamped (workers' output too)
   telemetry.csv    one row per second: temperature, clock, RAM, voltages, throttling flags, phase
-  summary.md/.csv  the results table of all detectors
   NAME.json        all results of one detector; NAME_dets.npy its raw detections from the accuracy pass
   run_config.json, environment.json, gt.json
+The results tables of all detectors go to the one summary file, SUMMARY (report.py).
 """
 import datetime
 import json
@@ -15,6 +15,8 @@ import sys
 
 PHASE = "##PHASE "  # a worker prints PHASE + stage when a stage starts; the orchestrator labels telemetry with it
 PROGRESS = "##PROGRESS "  # PROGRESS + "done total" after every image: the orchestrator's console progress bar
+# accuracy.py and performance.py each keep their part of it up to date with their latest run
+SUMMARY = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "out", "summary.md")
 
 
 def now():
