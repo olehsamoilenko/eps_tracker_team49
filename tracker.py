@@ -4,7 +4,7 @@ To add one (BoT-SORT, ...): subclass Tracker in its own module, implement update
 """
 import numpy as np
 
-TRACKERS = ["none", "bytetrack"]
+TRACKERS = ["none", "bytetrack", "sort_fast"]
 
 
 class Tracker:
@@ -22,4 +22,7 @@ def load_tracker(name):
     if name == "bytetrack":
         from byte_tracker import ByteTracker  # imported here: byte_tracker imports this module
         return ByteTracker()
+    if name == "sort_fast":
+        from sort_fast import SortFast
+        return SortFast()
     return Tracker()
