@@ -1,0 +1,16 @@
+description: NanoDet-Plus VisDrone, INT8 ncnn (mixed precision, detection head in FP), mAP50 test-dev 0.169 (FP 0.176)
+imgsz:  # h, w
+- 384
+- 640
+keep_ratio: true  # letterbox, as in training
+names:
+  0: pedestrian
+  1: people
+  2: bicycle
+  3: car
+  4: van
+  5: truck
+  6: tricycle
+  7: awning-tricycle
+  8: bus
+  9: motor
