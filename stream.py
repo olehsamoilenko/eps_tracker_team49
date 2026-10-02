@@ -11,6 +11,8 @@
     python stream.py -s input/0000001.jpg -d yolo8 --save out.jpg  # image -> image
     python stream.py --once -d nanodet --save snap.jpg             # one camera frame -> image
     python stream.py -d nanodet --duration 10 --save clip.mp4      # record 10 s from the camera
+    python stream.py -d yolo8 --tracker bytetrack -v               # camera, detector capped: for a power bank
+    python stream.py -d yolo8 --tracker bytetrack -v 4             # same, at most 4 detections per second
 
 Detectors (-d) are the models/NAME_ncnn directories; all of them report the same VisDrone classes.
 Live mode (camera, or a video with web output) runs at source speed: detection runs in its own thread and
@@ -18,6 +20,8 @@ its latest finished boxes are drawn on every new frame, so boxes lag by up to on
 A video with only --save is processed frame by frame: exact boxes, output at the source FPS.
 An image or --once gives a single frame; with web output it is served until Ctrl+C.
 --save FILE writes a video, or an image for .jpg/.png (it then holds the latest frame).
+-v [N] (camera only) caps the detector at N runs per second (default LOW_POWER_DET_FPS) and idles in between,
+to lower the power draw and heat on a weak supply (power bank); the camera stream keeps its full frame rate.
 Run inside the ~/yolo venv. Stop with Ctrl+C.
 """
 import argparse
@@ -29,6 +33,8 @@ from output import Recorder, draw
 from pipeline import DETECTORS, iter_frames, load_detector
 from stats import Stats
 from tracker import TRACKERS, load_tracker
+
+LOW_POWER_DET_FPS = 6  # -v without a number: detector runs per second (it does ~12/s on the Pi 5 uncapped)
 
 
 def parse_args():
@@ -47,7 +53,12 @@ def parse_args():
     p.add_argument("--width", type=int, default=640, help="camera frame width")
     p.add_argument("--height", type=int, default=480, help="camera frame height")
     p.add_argument("--fps", type=int, default=30, help="camera frame rate")
+    p.add_argument("-v", "--low-power", type=float, nargs="?", const=LOW_POWER_DET_FPS, default=0, metavar="N",
+                   help=f"camera only: at most N detections per second, {LOW_POWER_DET_FPS} by default "
+                        "(less power draw for a power bank)")
     args = p.parse_args()
+    if args.low_power and args.source != "picam":
+        p.error("-v is for the camera (-s picam) only")
     if args.tracker != "none" and not args.detector:
         p.error("--tracker needs a detector (-d)")
     if args.web is None and args.save is None:
@@ -57,6 +68,8 @@ def parse_args():
 
 def main():
     args = parse_args()
+    if args.low_power:
+        print(f"Low-power mode: at most {args.low_power:g} detections per second", flush=True)
     det = load_detector(args.detector, args.conf, args.classes)
     tracker = load_tracker(args.tracker)
     cap, fps, is_file = open_source(args.source, args.width, args.height, args.fps)
@@ -66,8 +79,9 @@ def main():
         web = WebStream(args.web)
     rec = Recorder(args.save, fps) if args.save else None
     single = args.once or is_image(args.source)
-    frames = iter_frames(cap, fps, is_file, det, tracker, single, offline=is_file and not web)
-    stats = Stats(det)
+    frames = iter_frames(cap, fps, is_file, det, tracker, single, offline=is_file and not web,
+                         max_det_fps=args.low_power)
+    stats = Stats(det, (args.detector or "") + (f" + {args.tracker}" if args.tracker != "none" else ""))
     try:
         for frame, boxes in frames:
             stats.tick(boxes)

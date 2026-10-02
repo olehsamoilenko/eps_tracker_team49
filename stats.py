@@ -4,6 +4,9 @@ import time
 import cv2
 
 LOG_EVERY = 5  # seconds between console stats lines
+FONT, SCALE, LINE = cv2.FONT_HERSHEY_SIMPLEX, 0.6, 24  # overlay text: font, scale, panel line height px
+PANEL_ALPHA = 0.55  # overlay background opacity
+WHITE = (255, 255, 255)  # BGR
 
 
 class Rate:
@@ -42,8 +45,8 @@ class Timing:
 class Stats:
     """Output frame count and FPS plus the detector's timing (det may be None)."""
 
-    def __init__(self, det):
-        self.det, self.rate, self.n, self.boxes = det, Rate(), 0, None
+    def __init__(self, det, label=""):
+        self.det, self.rate, self.n, self.boxes, self.label = det, Rate(), 0, None, label
         self.t0, self.t_log = None, time.perf_counter()
 
     def tick(self, boxes):
@@ -68,7 +71,17 @@ class Stats:
         return s.strip()
 
     def overlay(self, frame):
-        cv2.putText(frame, self.text(), (8, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+        """Top left, on a translucent dark panel: detector + tracker and FPS (green / yellow / red by speed)."""
+        fps = self.rate.fps
+        fps_col = (80, 230, 80) if fps >= 15 else (0, 215, 255) if fps >= 8 else (80, 80, 255)  # BGR
+        parts = [(self.label, WHITE), (f"   {fps:.0f} FPS" if fps else "", fps_col)]
+        width = sum(cv2.getTextSize(t, FONT, SCALE, 1)[0][0] for t, _ in parts)
+        roi = frame[:8 + LINE, :16 + width]
+        roi[:] = (roi * (1 - PANEL_ALPHA)).astype(roi.dtype)  # darkens: black panel at PANEL_ALPHA opacity
+        x = 8
+        for text, col in parts:
+            cv2.putText(frame, text, (x, LINE - 3), FONT, SCALE, col, 1, cv2.LINE_AA)
+            x += cv2.getTextSize(text, FONT, SCALE, 1)[0][0]
 
     def log(self, now=False):
         """Prints the stats every LOG_EVERY seconds, or right away with now=True."""

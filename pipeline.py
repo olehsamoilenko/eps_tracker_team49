@@ -44,13 +44,14 @@ def load_detector(name, conf, classes):
     return det
 
 
-def iter_frames(cap, fps, is_file, det, tracker, single, offline):
-    """single: one frame; offline: every frame of a file is detected, until its end; otherwise live_frames()."""
+def iter_frames(cap, fps, is_file, det, tracker, single, offline, max_det_fps=0):
+    """single: one frame; offline: every frame of a file is detected, until its end; otherwise live_frames(),
+    where max_det_fps > 0 caps the detector's runs per second."""
     if single:
         return one_frame(cap, fps, is_file, det, tracker)
     if offline:
         return file_frames(cap, det, tracker)
-    return live_frames(cap, fps, is_file, det, tracker)
+    return live_frames(cap, fps, is_file, det, tracker, max_det_fps)
 
 
 def analyze(frame, det, tracker):
@@ -74,12 +75,13 @@ def file_frames(cap, det, tracker):
         yield frame, analyze(frame, det, tracker)
 
 
-def live_frames(cap, fps, is_file, det, tracker):
+def live_frames(cap, fps, is_file, det, tracker, max_det_fps=0):
     """Frames at source speed; detection runs in its own thread and its latest result goes with each new frame."""
     frames, boxes, stop = Latest(), Latest(NO_BOXES), threading.Event()
     workers = [threading.Thread(target=capture_loop, args=(cap, fps, is_file, frames, stop), daemon=True)]
     if det:
-        workers.append(threading.Thread(target=detect_loop, args=(det, tracker, frames, boxes, stop), daemon=True))
+        workers.append(threading.Thread(target=detect_loop, args=(det, tracker, frames, boxes, stop, max_det_fps),
+                                        daemon=True))
     for w in workers:
         w.start()
     try:
@@ -117,10 +119,13 @@ def capture_loop(cap, fps, is_file, frames, stop):
     frames.put(None)  # end of stream
 
 
-def detect_loop(det, tracker, frames, boxes, stop):
+def detect_loop(det, tracker, frames, boxes, stop, max_det_fps=0):
     seq = 0
     while not stop.is_set():
+        t = time.perf_counter()
         frame, seq = frames.wait_new(seq)
         if frame is None:
             return
         boxes.put(analyze(frame, det, tracker))
+        if max_det_fps:
+            stop.wait(max(0.0, t + 1 / max_det_fps - time.perf_counter()))  # idle until the next run is due
